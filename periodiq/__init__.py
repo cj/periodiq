@@ -8,6 +8,7 @@ from calendar import monthrange
 from datetime import timedelta
 from pkg_resources import get_distribution
 from queue import Queue
+
 try:
     from signal import (
         SIGALRM,
@@ -21,16 +22,30 @@ from time import sleep
 import pendulum
 
 from dramatiq.middleware import SkipMessage
-from django.core.management.base import OutputWrapper
 import traceback
 from dramatiq import Middleware
 from dramatiq.cli import (
     import_broker,
 )
 
+from contextlib import contextmanager
+
+
+@contextmanager
+def OutputWrapper(output):
+    class Wrapper:
+        def __init__(self, output):
+            self.output = output
+
+        def write(self, message):
+            self.output.write(message + "\n")
+
+    yield Wrapper(output)
+
+
 stdout = OutputWrapper(sys.stdout)
 
-logger = logging.getLogger('periodiq')
+logger = logging.getLogger("periodiq")
 
 
 def cron(spec):
@@ -39,13 +54,13 @@ def cron(spec):
 
 class CronSpec:
     _named_spec = {
-        '@yearly': "0 0 1 1 *",
-        '@annually': "0 0 1 1 *",
-        '@monthly': "0 0 1 * *",
-        '@weekly': "0 0 * * 0",
-        '@daily': "0 0 * * *",
-        '@midnight': "0 0 * * *",
-        '@hourly': "0 * * * *",
+        "@yearly": "0 0 1 1 *",
+        "@annually": "0 0 1 1 *",
+        "@monthly": "0 0 1 * *",
+        "@weekly": "0 0 * * 0",
+        "@daily": "0 0 * * *",
+        "@midnight": "0 0 * * *",
+        "@hourly": "0 * * * *",
     }
 
     @classmethod
@@ -53,13 +68,13 @@ class CronSpec:
         # Instanciate a CronSpec object from cron-like string.
 
         fields = spec.strip()
-        if fields.startswith('@'):
+        if fields.startswith("@"):
             fields = cls._named_spec[fields]
         fields = fields.split()
 
         # Replace day of week by their number.
         dow = fields[4].lower()
-        weekdays = ('sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat')
+        weekdays = ("sun", "mon", "tue", "wed", "thu", "fri", "sat")
         for i, day in enumerate(weekdays):
             dow = dow.replace(day, str(i))
 
@@ -83,18 +98,32 @@ class CronSpec:
         if self.parsed_from is not None:
             return self.parsed_from
         else:
-            return ' '.join([
-                format_cron(self.minute, min_=0, max_=59),
-                format_cron(self.hour, min_=0, max_=23),
-                format_cron(self.dom, min_=1, max_=31),
-                format_cron(self.month, min_=1, max_=12),
-                format_cron(self.dow, min_=0, max_=7, names=[
-                    'Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun',
-                ]),
-            ])
+            return " ".join(
+                [
+                    format_cron(self.minute, min_=0, max_=59),
+                    format_cron(self.hour, min_=0, max_=23),
+                    format_cron(self.dom, min_=1, max_=31),
+                    format_cron(self.month, min_=1, max_=12),
+                    format_cron(
+                        self.dow,
+                        min_=0,
+                        max_=7,
+                        names=[
+                            "Sun",
+                            "Mon",
+                            "Tue",
+                            "Wed",
+                            "Thu",
+                            "Fri",
+                            "Sat",
+                            "Sun",
+                        ],
+                    ),
+                ]
+            )
 
     def __repr__(self):
-        return '<%s %s>' % (self.__class__.__name__, self)
+        return "<%s %s>" % (self.__class__.__name__, self)
 
     def astuple(self):
         return self.minute, self.hour, self.dom, self.month, self.dow
@@ -127,9 +156,7 @@ class CronSpec:
         _, month_days = monthrange(n.year, n.month)
         # Drop irrelevant day of month (28+ or 31+) and adapt offset according
         # to current month.
-        dom_e = [
-            x for x in self.dom if x <= month_days
-        ] + [month_days + self.dom[0]]
+        dom_e = [x for x in self.dom if x <= month_days] + [month_days + self.dom[0]]
         delay_dom = first(lambda x: x >= n.day, dom_e) - n.day
 
         if self.is_dow_restricted and self.is_dom_restricted:
@@ -207,7 +234,7 @@ def entrypoint(broker, modules, verbose, path):
     except (pdb.bdb.BdbQuit, KeyboardInterrupt):
         stdout.write("Interrupted.")
     except Exception as e:
-        stdout.write('Unhandled error: {}, stack: {}'.format(e, traceback.format_exc()))
+        stdout.write("Unhandled error: {}, stack: {}".format(e, traceback.format_exc()))
         stdout.write(
             "Please file an issue at "
             "https://gitlab.com/bersace/periodiq/issues/new with full log.",
@@ -219,14 +246,14 @@ def expand_valid(value, min, max):
     # From cron-like time or date field, expand all valid values within min-max
     # interval.
     valid = set()
-    value = value.replace('*', '{min}-{max}'.format(min=min, max=max))
-    intervals = value.split(',')
+    value = value.replace("*", "{min}-{max}".format(min=min, max=max))
+    intervals = value.split(",")
     for interval in intervals:
-        range_, _, step = interval.partition('/')
-        step = 1 if '' == step else int(step)
-        start, _, end = range_.partition('-')
+        range_, _, step = interval.partition("/")
+        step = 1 if "" == step else int(step)
+        start, _, end = range_.partition("-")
         start = int(start)
-        end = start if '' == end else int(end)
+        end = start if "" == end else int(end)
         # Note that step is not a modulo. cf.
         # https://stackoverflow.com/questions/27412483/how-do-cron-steps-work
         valid |= set(range(start, end + 1, step))
@@ -243,11 +270,10 @@ def first(function, iterable):
 
 def format_cron(values, min_, max_, names=None):
     if min_ == values[0] and values[-1] == max_:
-        return '*'
+        return "*"
     else:
-        return ','.join(
-            format_interval(*i, names=names)
-            for i in group_intervals(values)
+        return ",".join(
+            format_interval(*i, names=names) for i in group_intervals(values)
         )
 
 
@@ -255,9 +281,9 @@ def format_interval(start, stop, names=None):
     if stop == start:
         return str(start if names is None else names[start])
     elif names:
-        return ','.join(names[start:stop+1])
+        return ",".join(names[start : stop + 1])
     else:
-        return '%s-%s' % (start, stop)
+        return "%s-%s" % (start, stop)
 
 
 def group_intervals(values):
@@ -277,14 +303,20 @@ def monthesrange(start_year, start_month, end_month):
     start_month -= 1
     end_month -= 1
     return (
-        x for _, x in (
+        x
+        for _, x in (
             monthrange(start_year + m // 12, 1 + m % 12)
             for m in range(start_month, end_month)
         )
     )
 
 
-def main(broker, modules, path, verbose=logging.DEBUG, ):
+def main(
+    broker,
+    modules,
+    path,
+    verbose=logging.DEBUG,
+):
     logger.setLevel(verbose)
     if alarm is None:
         stdout.write("Unsupported system: alarm syscall is not available.")
@@ -298,10 +330,7 @@ def main(broker, modules, path, verbose=logging.DEBUG, ):
     for module in modules:
         importlib.import_module(module)
 
-    periodic_actors = [
-        a for a in broker.actors.values()
-        if 'periodic' in a.options
-    ]
+    periodic_actors = [a for a in broker.actors.values() if "periodic" in a.options]
     if not periodic_actors:
         stdout.write("No periodic actor to schedule.")
         return 1
@@ -320,7 +349,7 @@ def main(broker, modules, path, verbose=logging.DEBUG, ):
 
 
 def make_argument_parser():
-    dist = get_distribution('periodiq')
+    dist = get_distribution("periodiq")
     parser = argparse.ArgumentParser(
         prog="periodiq",
         description="Run periodiq scheduler.",
@@ -333,18 +362,27 @@ def make_argument_parser():
     )
 
     parser.add_argument(
-        "modules", metavar="module", nargs="*",
+        "modules",
+        metavar="module",
+        nargs="*",
         help="additional python modules to import",
     )
 
     parser.add_argument(
-        "--path", "-P", default=".", nargs="*", type=str,
+        "--path",
+        "-P",
+        default=".",
+        nargs="*",
+        type=str,
         help="the module import path (default: %(default)s)",
     )
 
     parser.add_argument("--version", action="version", version=dist.version)
     parser.add_argument(
-        "--verbose", "-v", default=0, action="count",
+        "--verbose",
+        "-v",
+        default=0,
+        action="count",
         help="turn on verbose log output",
     )
 
@@ -354,37 +392,37 @@ def make_argument_parser():
 def print_periodic_actors(actors):
     stdout.write("Registered periodic actors:")
     stdout.write("")
-    stdout.write("    %-24s module:actor@queue" % ('m h dom mon dow',))
-    stdout.write("    %-24s ------------------" % ('-' * 24, ))
+    stdout.write("    %-24s module:actor@queue" % ("m h dom mon dow",))
+    stdout.write("    %-24s ------------------" % ("-" * 24,))
     for actor in actors:
         kw = dict(
             module=actor.fn.__module__,
             name=actor.actor_name,
             queue=actor.queue_name,
-            spec=str(actor.options['periodic']),
+            spec=str(actor.options["periodic"]),
         )
         stdout.write("    %(spec)-24s %(module)s:%(name)s@%(queue)s " % kw)
     stdout.write("")
 
 
 class PeriodiqMiddleware(Middleware):
-    actor_options = set(['periodic'])
+    actor_options = set(["periodic"])
 
     def __init__(self, skip_delay=30):
         self.skip_delay = skip_delay
 
     def before_process_message(self, broker, message):
         actor = broker.actors[message.actor_name]
-        if 'periodic' not in actor.options:
+        if "periodic" not in actor.options:
             return
 
-        msg_str = '%s:%s' % (message.message_id, message)
-        if 'scheduled_at' not in message.options:
+        msg_str = "%s:%s" % (message.message_id, message)
+        if "scheduled_at" not in message.options:
             stdout.write("%s looks manually triggered.", msg_str)
             return
 
         now = pendulum.now()
-        scheduled_at = pendulum.parse(message.options['scheduled_at'])
+        scheduled_at = pendulum.parse(message.options["scheduled_at"])
         delta = now - scheduled_at
 
         if delta.total_seconds() > self.skip_delay:
@@ -393,7 +431,9 @@ class PeriodiqMiddleware(Middleware):
         else:
             stdout.write(
                 "Processing %s scheduled at %s.",
-                msg_str, message.options['scheduled_at'])
+                msg_str,
+                message.options["scheduled_at"],
+            )
 
 
 class Scheduler:
@@ -416,15 +456,17 @@ class Scheduler:
     def schedule(self):
         now = (pendulum.now() + timedelta(seconds=0.5)).replace(microsecond=0)
         stdout.write("Wake up at {}.".format(now))
-        self.send_actors([
-            a for a in self.actors
-            if a.options['periodic'].validate(now)
-        ], now=now)
+        self.send_actors(
+            [a for a in self.actors if a.options["periodic"].validate(now)], now=now
+        )
 
-        prioritized_actors = sorted([
-            (actor.options['periodic'].next_valid_date(now), actor)
-            for actor in self.actors
-        ], key=lambda x: x[0])  # Sort only on date.
+        prioritized_actors = sorted(
+            [
+                (actor.options["periodic"].next_valid_date(now), actor)
+                for actor in self.actors
+            ],
+            key=lambda x: x[0],
+        )  # Sort only on date.
 
         next_date, _ = prioritized_actors[0]
         stdout.write("Nothing to do until {}.".format(next_date))
