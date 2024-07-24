@@ -20,30 +20,14 @@ except ImportError:
 from time import sleep
 
 import pendulum
-
-from dramatiq.middleware import SkipMessage
-import traceback
 from dramatiq import Middleware
 from dramatiq.cli import (
+    LOGFORMAT,
+    VERBOSITY,
     import_broker,
 )
+from dramatiq.middleware import SkipMessage
 
-from contextlib import contextmanager
-
-
-@contextmanager
-def OutputWrapper(output):
-    class Wrapper:
-        def __init__(self, output):
-            self.output = output
-
-        def write(self, message):
-            self.output.write(message + "\n")
-
-    yield Wrapper(output)
-
-
-stdout = OutputWrapper(sys.stdout)
 
 logger = logging.getLogger("periodiq")
 
@@ -228,14 +212,18 @@ class CronSpec:
         return True
 
 
-def entrypoint(broker, modules, verbose, path):
+def entrypoint():
+    logging.basicConfig(level=logging.INFO, format=LOGFORMAT)
+
     try:
-        exit(main(broker=broker, modules=modules, verbose=verbose, path=path))
+        parser = make_argument_parser()
+        args = parser.parse_args()
+        exit(main(args))
     except (pdb.bdb.BdbQuit, KeyboardInterrupt):
-        stdout.write("Interrupted.")
-    except Exception as e:
-        stdout.write("Unhandled error: {}, stack: {}".format(e, traceback.format_exc()))
-        stdout.write(
+        logger.info("Interrupted.")
+    except Exception:
+        logger.exception("Unhandled error:")
+        logger.error(
             "Please file an issue at "
             "https://gitlab.com/bersace/periodiq/issues/new with full log.",
         )
@@ -311,28 +299,23 @@ def monthesrange(start_year, start_month, end_month):
     )
 
 
-def main(
-    broker,
-    modules,
-    path,
-    verbose=logging.DEBUG,
-):
-    logger.setLevel(verbose)
+def main(args):
+    logging.getLogger().setLevel(VERBOSITY.get(args.verbose, logging.DEBUG))
     if alarm is None:
-        stdout.write("Unsupported system: alarm syscall is not available.")
+        logger.critical("Unsupported system: alarm syscall is not available.")
         return 1
 
-    stdout.write("Starting Periodiq, a simple scheduler for Dramatiq.")
+    logger.info("Starting Periodiq, a simple scheduler for Dramatiq.")
 
-    for _path in path:
-        sys.path.insert(0, _path)
-    _, broker = import_broker(broker)
-    for module in modules:
+    for path in args.path:
+        sys.path.insert(0, path)
+    _, broker = import_broker(args.broker)
+    for module in args.modules:
         importlib.import_module(module)
 
     periodic_actors = [a for a in broker.actors.values() if "periodic" in a.options]
     if not periodic_actors:
-        stdout.write("No periodic actor to schedule.")
+        logger.error("No periodic actor to schedule.")
         return 1
     print_periodic_actors(periodic_actors)
 
@@ -340,7 +323,7 @@ def main(
     now = pendulum.now()
     # If we start late in a minute. Pad to start of next minute.
     if now.second > 55:
-        stdout.write("Skipping to next minute.")
+        logger.debug("Skipping to next minute.")
         sleep(60 - now.second)
     scheduler.schedule()
     scheduler.loop()
@@ -390,10 +373,11 @@ def make_argument_parser():
 
 
 def print_periodic_actors(actors):
-    stdout.write("Registered periodic actors:")
-    stdout.write("")
-    stdout.write("    %-24s module:actor@queue" % ("m h dom mon dow",))
-    stdout.write("    %-24s ------------------" % ("-" * 24,))
+    p = logger.info
+    p("Registered periodic actors:")
+    p("")
+    p("    %-24s module:actor@queue" % ("m h dom mon dow",))
+    p("    %-24s ------------------" % ("-" * 24,))
     for actor in actors:
         kw = dict(
             module=actor.fn.__module__,
@@ -401,8 +385,8 @@ def print_periodic_actors(actors):
             queue=actor.queue_name,
             spec=str(actor.options["periodic"]),
         )
-        stdout.write("    %(spec)-24s %(module)s:%(name)s@%(queue)s " % kw)
-    stdout.write("")
+        p("    %(spec)-24s %(module)s:%(name)s@%(queue)s " % kw)
+    p("")
 
 
 class PeriodiqMiddleware(Middleware):
@@ -418,7 +402,7 @@ class PeriodiqMiddleware(Middleware):
 
         msg_str = "%s:%s" % (message.message_id, message)
         if "scheduled_at" not in message.options:
-            stdout.write("%s looks manually triggered.", msg_str)
+            logger.debug("%s looks manually triggered.", msg_str)
             return
 
         now = pendulum.now()
@@ -426,10 +410,10 @@ class PeriodiqMiddleware(Middleware):
         delta = now - scheduled_at
 
         if delta.total_seconds() > self.skip_delay:
-            stdout.write("Skipping %s older than %ss", msg_str, self.skip_delay)
+            logger.info("Skipping %s older than %ss", msg_str, self.skip_delay)
             raise SkipMessage()
         else:
-            stdout.write(
+            logger.info(
                 "Processing %s scheduled at %s.",
                 msg_str,
                 message.options["scheduled_at"],
@@ -450,12 +434,12 @@ class Scheduler:
     def send_actors(self, actors, now):
         now_str = str(now)
         for actor in actors:
-            stdout.write("Scheduling {} at {}.".format(actor, now_str))
+            logger.info("Scheduling %s at %s.", actor, now_str)
             actor.send_with_options(scheduled_at=now_str)
 
     def schedule(self):
         now = (pendulum.now() + timedelta(seconds=0.5)).replace(microsecond=0)
-        stdout.write("Wake up at {}.".format(now))
+        logger.debug("Wake up at %s.", now)
         self.send_actors(
             [a for a in self.actors if a.options["periodic"].validate(now)], now=now
         )
@@ -469,16 +453,16 @@ class Scheduler:
         )  # Sort only on date.
 
         next_date, _ = prioritized_actors[0]
-        stdout.write("Nothing to do until {}.".format(next_date))
+        logger.debug("Nothing to do until %s.", next_date)
         # Refresh now because we may have spent some time sending messages.
         delay = next_date - pendulum.now()
         if delay.total_seconds() <= 0:
-            stdout.write("Negative delay. Scheduling immediately.")
+            logger.warning("Negative delay. Scheduling immediately.")
             return self.schedule()
 
         delay_s = delay.total_seconds()
         delay_s, delay_ms = int(delay_s), delay_s % 1
-        stdout.write("Sleeping for {} ({}).".format(delay_s, delay))
+        logger.debug("Sleeping for %ss (%s).", delay_s, delay)
         # Sleep microseconds because alarm only accepts integers.
         sleep(delay_ms)
         if delay_s:
@@ -488,5 +472,9 @@ class Scheduler:
             self.alarm_q.put_nowait(True)
 
     def signal_handler(self, *_):
-        stdout.write("Alaaaaarm!")
+        logger.debug("Alaaaaarm!")
         self.alarm_q.put_nowait(True)
+
+
+if "__main__" == __name__:
+    entrypoint()
