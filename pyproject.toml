@@ -11,6 +11,9 @@ readme = "README.md"
 requires-python = ">= 3.8"
 packages = [{ include = "periodiq" }]
 
+[project.scripts]
+periodiq = "periodiq:entrypoint"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
